@@ -34,7 +34,7 @@
 <header class="top"><span class="wordmark">Lab PCs <span>status and bookings</span></span></header>
 <main>
 <p class="utility" style="margin-bottom:2rem">Book GUI sessions and runs longer than about an hour in the PC's calendar,
-titled "Name — what". A PC is free to use when nothing is computing and it isn't booked; open windows only hold memory.</p>
+titled "Name — what". A PC is free to use when it is idle (low CPU and GPU load) and not booked.</p>
 <div id="pcs"><p class="utility">Loading…</p></div>
 <details class="utility" style="border-top:1px solid var(--rule);padding-top:.9rem">
 <summary>How this works…</summary>
@@ -58,6 +58,7 @@ function when(t) {
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 function gb(x) { return x == null ? '?' : (x >= 10 ? Math.round(x) : Math.round(x * 10) / 10) + ' GB'; }
+var BUSY_PCT = 25;  // CPU or GPU use at or above this counts as busy
 var SOLVE = [[/^fdtd-engine/, 'FDTD solve'], [/^varfdtd-engine/, 'varFDTD solve'], [/^fde-engine/, 'MODE (FDE) solve'],
              [/^eme-engine/, 'EME solve'], [/^comsol/, 'COMSOL solve']];
 function solveName(app) { for (var i = 0; i < SOLVE.length; i++) if (SOLVE[i][0].test(app)) return SOLVE[i][1]; return app; }
@@ -74,9 +75,14 @@ function section(pc, now) {
       r.n += 1; r.mem += e.mem_gb || 0; if (e.start && e.start < r.start) r.start = e.start;
     });
     var ks = Object.keys(runs);
-    h += ks.length ? '<p class="now busy">Computing: ' + ks.map(function (k) { var r = runs[k];
-            return esc(k) + ' since ' + when(r.start) + ' (' + r.n + ' process' + (r.n > 1 ? 'es' : '') + ', ' + gb(r.mem) + ')'; }).join('; ') + '</p>'
-                   : '<p class="now">Nothing computing.</p>';
+    // Two instruments: solver processes (by name) and CPU/GPU load. A solve inside a window (COMSOL, MODE's FDE) or
+    // a script shows only as load, so low load is what "idle" means, not just "no solver process".
+    var cpu = s.cpu_load_pct, gpu = s.gpu && s.gpu.util_pct, loaded = cpu >= BUSY_PCT || gpu >= BUSY_PCT;
+    var load = [cpu != null ? 'CPU ' + cpu + ' %' : '', gpu != null ? 'GPU ' + gpu + ' %' : ''].filter(Boolean).join(', ');
+    if (ks.length) h += '<p class="now busy">Solver running: ' + ks.map(function (k) { var r = runs[k];
+            return esc(k) + ' since ' + when(r.start) + ' (' + r.n + ' process' + (r.n > 1 ? 'es' : '') + ', ' + gb(r.mem) + ')'; }).join('; ') + ' · ' + load + '</p>';
+    else if (loaded) h += '<p class="now busy">Busy: ' + load + '. No separate solver process, so probably a solve inside an open window or a script.</p>';
+    else h += '<p class="now">Idle: no solver running, ' + load + '.</p>';
   }
   // 2. booked?
   var cur = pc.events.filter(function (e) { return e.start <= now && now < e.end; });
@@ -88,12 +94,11 @@ function section(pc, now) {
     // 3. free now
     var free = [];
     if (s.ram_free_gb != null) free.push(gb(s.ram_free_gb) + ' of ' + gb(s.ram_total_gb) + ' RAM');
-    if (s.cpu_load_pct != null) free.push('CPU ' + s.cpu_load_pct + ' % busy');
-    if (s.gpu && s.gpu.util_pct != null) free.push('GPU ' + s.gpu.util_pct + ' % busy');
-    h += '<p' + (v.low_ram ? ' class="busy"' : '') + '>Free now: ' + free.join(' · ') + (v.low_ram ? ' (low on RAM)' : '') + '</p>';
+    h += '<p' + (v.low_ram ? ' class="busy"' : '') + '>Free memory: ' + free.join(' · ') + (v.low_ram ? ' (low on RAM)' : '') + '</p>';
     // open windows: they hold memory, but compute nothing
-    if ((s.guis || []).length) h += '<p class="utility">Open windows, holding memory but not computing: ' + s.guis.map(function (g) {
-        return g.count + ' ' + esc(g.app) + (g.count > 1 ? ' windows' : ' window') + ' (' + gb(g.mem_gb) + ', oldest opened ' + when(g.oldest) + ')'; }).join(' · ') + '</p>';
+    if ((s.guis || []).length) h += '<p class="utility" style="margin-bottom:0">Open windows (they hold memory; any solving in them shows above as load):</p><ul class="utility" style="margin-top:0;list-style:disc;padding-left:1.2rem">' +
+        s.guis.map(function (g) { return '<li>' + g.count + ' ' + esc(g.app) + (g.count > 1 ? ' windows' : ' window') + ', ' + gb(g.mem_gb) +
+          ', oldest opened ' + when(g.oldest) + '</li>'; }).join('') + '</ul>';
     var lic = s.licences;
     if (lic) h += '<p class="utility">Lumerical licences in use across Stanford (shared pool): ' + Object.keys(lic).filter(function (f) { return /fdtd|mode/.test(f); })
       .map(function (f) { return esc(f.replace('lum_', '').replace('_', ' ')) + ' ' + lic[f][0] + ' of ' + lic[f][1]; }).join(' · ') + '</p>';
